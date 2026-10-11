@@ -10,7 +10,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
-from . import db
+from . import db, nexora_tools
 from .auth import BearerAuth
 from .config import get_settings
 from .guard import GuardError, classify
@@ -139,38 +139,43 @@ async def run_select(sql: str, params: list | None = None) -> dict:
     return {"rows": rows, "row_count": len(rows), "truncated": truncated}
 
 
-@mcp.tool(annotations=READ)
-async def preview_write(sql: str, params: list | None = None) -> dict:
-    """Dry-run one INSERT/UPDATE/DELETE/CREATE/ALTER statement (rolled back) and return a confirm_token.
-    Show the user the SQL and affected rows, and call execute_write only after they approve.
-    DROP/TRUNCATE/GRANT, multiple statements, and UPDATE/DELETE without WHERE are rejected."""
-    c = classify(sql)
-    if c.kind == "read":
-        raise GuardError("Use run_select for read-only statements.")
-    affected = None
-    if c.kind == "write":
-        affected = await db.run_write(S, sql, params, commit=False)
-    token = _make_token(sql, params)
-    return {
-        "kind": c.kind,
-        "sql": sql,
-        "would_affect_rows": affected,  # None for DDL: not previewable (MySQL DDL auto-commits)
-        "confirm_token": token,
-        "expires_in_seconds": S.confirm_ttl_seconds,
-    }
+if S.enable_sql_write:
+
+    @mcp.tool(annotations=READ)
+    async def preview_write(sql: str, params: list | None = None) -> dict:
+        """Dry-run one INSERT/UPDATE/DELETE/CREATE/ALTER statement (rolled back) and return a confirm_token.
+        Show the user the SQL and affected rows, and call execute_write only after they approve.
+        DROP/TRUNCATE/GRANT, multiple statements, and UPDATE/DELETE without WHERE are rejected."""
+        c = classify(sql)
+        if c.kind == "read":
+            raise GuardError("Use run_select for read-only statements.")
+        affected = None
+        if c.kind == "write":
+            affected = await db.run_write(S, sql, params, commit=False)
+        token = _make_token(sql, params)
+        return {
+            "kind": c.kind,
+            "sql": sql,
+            "would_affect_rows": affected,  # None for DDL: not previewable (MySQL DDL auto-commits)
+            "confirm_token": token,
+            "expires_in_seconds": S.confirm_ttl_seconds,
+        }
+
+    @mcp.tool(annotations=WRITE)
+    async def execute_write(confirm_token: str) -> dict:
+        """Execute and commit a statement previously validated by preview_write. Single use."""
+        sql, params = _open_token(confirm_token)
+        token_hash = hashlib.sha256(confirm_token.encode()).hexdigest()
+        try:
+            affected = await db.run_write(S, sql, params, commit=True, token_hash=token_hash)
+        except db.TokenAlreadyUsed:
+            raise ValueError("This confirm_token was already used. Call preview_write again.") from None
+        _audit({"sql": sql, "params": params, "affected": affected})
+        return {"status": "committed", "affected_rows": affected}
 
 
-@mcp.tool(annotations=WRITE)
-async def execute_write(confirm_token: str) -> dict:
-    """Execute and commit a statement previously validated by preview_write. Single use."""
-    sql, params = _open_token(confirm_token)
-    token_hash = hashlib.sha256(confirm_token.encode()).hexdigest()
-    try:
-        affected = await db.run_write(S, sql, params, commit=True, token_hash=token_hash)
-    except db.TokenAlreadyUsed:
-        raise ValueError("This confirm_token was already used. Call preview_write again.") from None
-    _audit({"sql": sql, "params": params, "affected": affected})
-    return {"status": "committed", "affected_rows": affected}
+if S.nexora_api_url and S.nexora_api_token:
+    nexora_tools.register(mcp, S)
 
 
 app = BearerAuth(mcp.streamable_http_app(), S.mcp_api_key)

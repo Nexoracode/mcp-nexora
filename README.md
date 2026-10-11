@@ -27,3 +27,11 @@ GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER ON mydb.* TO 'nexora'@'%';
 
 ## Tests
 `.venv\Scripts\python -m pytest`
+
+## Nexora API tools
+With `NEXORA_API_URL` and `NEXORA_API_TOKEN` set, the server also exposes tools backed by the panel's owner API
+(`list_sites`, `get_site`, `update_site`, `adjust_wallet`, `approve_purchase`, `reject_purchase`, `approve_topup`,
+`reject_topup`, `reply_ticket`, `close_ticket`, `update_feature`, `create_package`, ...). Every mutating tool needs
+`confirm=true`; without it the tool only returns a preview with the current state. Raw SQL writes
+(`preview_write` / `execute_write`) are off unless `ENABLE_SQL_WRITE=true`. Reads via `run_select` stay available,
+so give the database user `SELECT` only.
