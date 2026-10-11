@@ -7,3 +7,5 @@ tools/
 server.log
 .vercel/
 tunnel.log
+
+.vercel
