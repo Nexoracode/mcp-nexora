@@ -1,0 +1,6 @@
+mcp>=1.9,<2
+aiomysql>=0.2
+sqlglot>=25
+pydantic-settings>=2.3
+uvicorn>=0.30
+-e .

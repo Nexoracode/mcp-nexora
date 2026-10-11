@@ -12,7 +12,10 @@ class Settings(BaseSettings):
     mcp_api_key: str = ""
     max_rows: int = 200
     query_timeout_seconds: int = 15
-    confirm_ttl_seconds: int = 300
+    confirm_ttl_seconds: int = 120
+    confirm_secret: str = ""  # HMAC key for confirm tokens; falls back to mcp_api_key
+    db_ssl: bool = False  # verified TLS to the database
+    db_pool_max: int = 2
     host: str = "127.0.0.1"
     port: int = 8000
     audit_log: str = "audit.log"

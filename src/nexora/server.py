@@ -1,5 +1,8 @@
+import base64
+import hashlib
+import hmac
 import json
-import secrets
+import sys
 import time
 
 import uvicorn
@@ -19,14 +22,45 @@ mcp = FastMCP(
     "nexora-db",
     host=S.host,
     port=S.port,
+    stateless_http=True,
+    json_response=True,
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
 
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False)
 
-# confirm_token -> (sql, params, expires_at)
-_pending: dict[str, tuple[str, list | None, float]] = {}
+_KEY = (S.confirm_secret or S.mcp_api_key or "dev-only-secret").encode()
+_used: set[str] = set()  # best-effort single use within one instance
+
+
+def _b64(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).decode().rstrip("=")
+
+
+def _unb64(s: str) -> bytes:
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+def _make_token(sql: str, params: list | None) -> str:
+    body = _b64(json.dumps({"sql": sql, "params": params, "exp": time.time() + S.confirm_ttl_seconds}).encode())
+    sig = _b64(hmac.new(_KEY, body.encode(), hashlib.sha256).digest())
+    return f"{body}.{sig}"
+
+
+def _open_token(token: str) -> tuple[str, list | None]:
+    try:
+        body, sig = token.split(".")
+        good = _b64(hmac.new(_KEY, body.encode(), hashlib.sha256).digest())
+        if not hmac.compare_digest(sig, good) or token in _used:
+            raise ValueError
+        data = json.loads(_unb64(body))
+        if data["exp"] < time.time():
+            raise ValueError
+    except Exception:
+        raise ValueError("Invalid or expired confirm_token. Call preview_write again.") from None
+    _used.add(token)
+    return data["sql"], data["params"]
 
 
 def _audit(event: dict) -> None:
@@ -113,11 +147,7 @@ async def preview_write(sql: str, params: list | None = None) -> dict:
     affected = None
     if c.kind == "write":
         affected = await db.run_write(S, sql, params, commit=False)
-    now = time.time()
-    for t in [t for t, (_, _, exp_at) in _pending.items() if exp_at < now]:
-        del _pending[t]
-    token = secrets.token_urlsafe(16)
-    _pending[token] = (sql, params, now + S.confirm_ttl_seconds)
+    token = _make_token(sql, params)
     return {
         "kind": c.kind,
         "sql": sql,
@@ -130,17 +160,16 @@ async def preview_write(sql: str, params: list | None = None) -> dict:
 @mcp.tool(annotations=WRITE)
 async def execute_write(confirm_token: str) -> dict:
     """Execute and commit a statement previously validated by preview_write. Single use."""
-    item = _pending.pop(confirm_token, None)
-    if item is None or item[2] < time.time():
-        raise ValueError("Invalid or expired confirm_token. Call preview_write again.")
-    sql, params, _ = item
+    sql, params = _open_token(confirm_token)
     affected = await db.run_write(S, sql, params, commit=True)
     _audit({"sql": sql, "params": params, "affected": affected})
     return {"status": "committed", "affected_rows": affected}
 
 
+app = BearerAuth(mcp.streamable_http_app(), S.mcp_api_key)
+
+
 def main() -> None:
-    app = BearerAuth(mcp.streamable_http_app(), S.mcp_api_key)
     uvicorn.run(app, host=S.host, port=S.port)
 
 

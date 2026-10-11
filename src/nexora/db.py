@@ -4,6 +4,8 @@ import aiomysql
 
 from .config import Settings
 
+import ssl
+
 _pool: aiomysql.Pool | None = None
 _IDENT = re.compile(r"^[A-Za-z0-9_$]{1,64}$")
 
@@ -13,8 +15,9 @@ async def init_pool(s: Settings) -> aiomysql.Pool:
     if _pool is None:
         _pool = await aiomysql.create_pool(
             host=s.db_host, port=s.db_port, user=s.db_user, password=s.db_password,
-            db=s.db_name, minsize=1, maxsize=5, autocommit=False,
+            db=s.db_name, minsize=1, maxsize=s.db_pool_max, autocommit=False,
             cursorclass=aiomysql.DictCursor, connect_timeout=10,
+            ssl=ssl.create_default_context() if s.db_ssl else None,
         )
     return _pool
 
