@@ -1,6 +1,7 @@
 import re
 
 import aiomysql
+import pymysql.err
 
 from .config import Settings
 
@@ -54,12 +55,48 @@ async def fetch(s: Settings, sql: str, params=None, *, limit: int | None = None)
                 await conn.rollback()
 
 
-async def run_write(s: Settings, sql: str, params=None, *, commit: bool):
-    """Execute a write; roll back when commit=False (preview). Returns affected rows."""
+TOKEN_TABLE = "_mcp_used_tokens"
+_token_table_ready = False
+
+
+class TokenAlreadyUsed(Exception):
+    pass
+
+
+async def _ensure_token_table(pool) -> None:
+    global _token_table_ready
+    if _token_table_ready:
+        return
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"CREATE TABLE IF NOT EXISTS {TOKEN_TABLE} ("
+                "token_hash CHAR(64) NOT NULL PRIMARY KEY, "
+                "used_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+            )
+            await conn.commit()
+    _token_table_ready = True
+
+
+async def run_write(s: Settings, sql: str, params=None, *, commit: bool, token_hash: str | None = None):
+    """Execute a write; roll back when commit=False (preview). Returns affected rows.
+
+    With `token_hash`, the token is recorded in the same transaction as the write, so a
+    confirm token can be consumed only once across all serverless instances. If the write
+    fails the transaction rolls back and the token stays usable.
+    """
     pool = await init_pool(s)
+    if token_hash:
+        await _ensure_token_table(pool)
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             try:
+                if token_hash:
+                    await cur.execute(f"DELETE FROM {TOKEN_TABLE} WHERE used_at < NOW() - INTERVAL 1 DAY")
+                    try:
+                        await cur.execute(f"INSERT INTO {TOKEN_TABLE} (token_hash) VALUES (%s)", (token_hash,))
+                    except pymysql.err.IntegrityError as e:
+                        raise TokenAlreadyUsed from e
                 await cur.execute(sql, params)
                 affected = cur.rowcount
                 if commit:

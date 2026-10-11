@@ -31,7 +31,6 @@ READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=F
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False)
 
 _KEY = (S.confirm_secret or S.mcp_api_key or "dev-only-secret").encode()
-_used: set[str] = set()  # best-effort single use within one instance
 
 
 def _b64(b: bytes) -> str:
@@ -52,14 +51,13 @@ def _open_token(token: str) -> tuple[str, list | None]:
     try:
         body, sig = token.split(".")
         good = _b64(hmac.new(_KEY, body.encode(), hashlib.sha256).digest())
-        if not hmac.compare_digest(sig, good) or token in _used:
+        if not hmac.compare_digest(sig, good):
             raise ValueError
         data = json.loads(_unb64(body))
         if data["exp"] < time.time():
             raise ValueError
     except Exception:
         raise ValueError("Invalid or expired confirm_token. Call preview_write again.") from None
-    _used.add(token)
     return data["sql"], data["params"]
 
 
@@ -166,7 +164,11 @@ async def preview_write(sql: str, params: list | None = None) -> dict:
 async def execute_write(confirm_token: str) -> dict:
     """Execute and commit a statement previously validated by preview_write. Single use."""
     sql, params = _open_token(confirm_token)
-    affected = await db.run_write(S, sql, params, commit=True)
+    token_hash = hashlib.sha256(confirm_token.encode()).hexdigest()
+    try:
+        affected = await db.run_write(S, sql, params, commit=True, token_hash=token_hash)
+    except db.TokenAlreadyUsed:
+        raise ValueError("This confirm_token was already used. Call preview_write again.") from None
     _audit({"sql": sql, "params": params, "affected": affected})
     return {"status": "committed", "affected_rows": affected}
 
