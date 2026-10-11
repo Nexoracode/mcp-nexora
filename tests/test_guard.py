@@ -8,6 +8,8 @@ from nexora.guard import GuardError, classify
     ("SHOW TABLES", "read"),
     ("DESCRIBE users", "read"),
     ("EXPLAIN SELECT 1", "read"),
+    ("SELECT * FROM t WHERE id = %s", "read"),
+    ("UPDATE t SET a = %s WHERE id = %s", "write"),
     ("INSERT INTO t (a) VALUES (1)", "write"),
     ("UPDATE t SET a=1 WHERE id=2", "write"),
     ("DELETE FROM t WHERE id=2", "write"),

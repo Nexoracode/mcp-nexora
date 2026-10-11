@@ -65,8 +65,13 @@ def _open_token(token: str) -> tuple[str, list | None]:
 
 def _audit(event: dict) -> None:
     event["ts"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-    with open(S.audit_log, "a", encoding="utf-8") as f:
-        f.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
+    line = json.dumps(event, ensure_ascii=False, default=str)
+    print("AUDIT " + line, file=sys.stderr, flush=True)  # visible in Vercel/Railway logs
+    try:
+        with open(S.audit_log, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass  # read-only filesystem (serverless); stderr copy above is the record
 
 
 @mcp.tool(annotations=READ)

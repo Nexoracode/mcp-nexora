@@ -22,7 +22,8 @@ _FORBIDDEN = (exp.Drop, exp.TruncateTable, exp.Grant)
 
 def _parse_one(sql: str) -> exp.Expression:
     try:
-        parsed = [p for p in sqlglot.parse(sql, read="mysql") if p is not None]
+        # %s is the DB-API placeholder; sqlglot only understands ? so swap it for parsing only.
+        parsed = [p for p in sqlglot.parse(sql.replace("%s", "?"), read="mysql") if p is not None]
     except sqlglot.errors.SqlglotError as e:
         raise GuardError(f"SQL parse error: {e}") from e
     if len(parsed) != 1:
